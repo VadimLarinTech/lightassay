@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lightassay"
+version = "0.3.1"
+description = "File-based orchestrator for structured evaluation of applied LLM workflows: humans declare intent, LLMs reason about quality, code runs and records raw facts"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Vadim Larin", email = "vadimlarintech@gmail.com" },
+]
+keywords = ["llm", "eval", "evaluation", "testing", "workflow", "ai", "ai-agents"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.urls]
+Homepage = "https://github.com/vadimlarintech/lightassay"
+Repository = "https://github.com/vadimlarintech/lightassay"
+Issues = "https://github.com/vadimlarintech/lightassay/issues"
+Changelog = "https://github.com/vadimlarintech/lightassay/blob/main/CHANGELOG.md"
+
+[project.scripts]
+lightassay = "lightassay.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501", "E402"]
+"tests/fixtures/*" = ["E501", "UP"]

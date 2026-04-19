@@ -1,0 +1,6 @@
+{
+  "workflow_id": "stub-demo",
+  "provider": "stub",
+  "model": "stub-workflow-v1",
+  "adapter": "./stub_workflow.py"
+}

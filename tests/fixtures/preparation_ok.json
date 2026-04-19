@@ -1,0 +1,5 @@
+{
+  "adapter": "./preparation_adapter_echo.py",
+  "provider": "test",
+  "model": "echo-v1"
+}

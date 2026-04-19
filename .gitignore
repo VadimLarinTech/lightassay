@@ -1,0 +1,38 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# lightassay runtime state (active workbook pointer, registry, execution log)
+.lightassay/
+
+# Stray editor artefact
+.codex
+
+# inner
+docs/inner

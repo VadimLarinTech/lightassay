@@ -1,0 +1,10 @@
+{
+  "workflow_id": "callable-echo-test",
+  "provider": "test",
+  "model": "echo-v1",
+  "driver": {
+    "type": "python-callable",
+    "module": "callable_echo",
+    "function": "handle_request"
+  }
+}

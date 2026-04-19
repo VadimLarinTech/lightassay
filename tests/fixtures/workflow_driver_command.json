@@ -1,0 +1,9 @@
+{
+  "workflow_id": "command-echo-test",
+  "provider": "test",
+  "model": "echo-v1",
+  "driver": {
+    "type": "command",
+    "command": ["__PYTHON__", "__ADAPTER__"]
+  }
+}

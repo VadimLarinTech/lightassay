@@ -1,0 +1,6 @@
+{
+  "workflow_id": "config-echo-test",
+  "provider": "test-provider",
+  "model": "test-model-v1",
+  "adapter": "./adapter_echo_config.py"
+}

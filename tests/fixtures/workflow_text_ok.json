@@ -1,0 +1,6 @@
+{
+  "workflow_id": "text-echo-test",
+  "provider": "test",
+  "model": "echo-v1",
+  "adapter": "./adapter_echo.py"
+}

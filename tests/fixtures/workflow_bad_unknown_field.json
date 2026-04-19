@@ -1,0 +1,7 @@
+{
+  "workflow_id": "test",
+  "provider": "test",
+  "model": "test",
+  "adapter": "./adapter.py",
+  "extra_field": "not allowed"
+}

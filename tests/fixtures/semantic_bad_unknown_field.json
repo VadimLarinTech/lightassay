@@ -1,0 +1,6 @@
+{
+  "adapter": "./semantic_adapter_echo.py",
+  "provider": "test",
+  "model": "echo-v1",
+  "extra_field": "not allowed"
+}

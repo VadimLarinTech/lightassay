@@ -1,0 +1,5 @@
+{
+  "adapter": "./stub_semantic_adapter.py",
+  "provider": "stub",
+  "model": "stub-semantic-v1"
+}

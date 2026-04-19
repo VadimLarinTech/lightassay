@@ -1,0 +1,10 @@
+{
+  "workflow_id": "http-echo-test",
+  "provider": "test",
+  "model": "echo-v1",
+  "driver": {
+    "type": "http",
+    "url": "http://127.0.0.1:0/echo",
+    "method": "POST"
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "adapter": "./semantic_adapter_echo.py",
+  "provider": "test"
+}
