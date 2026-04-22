@@ -824,6 +824,15 @@ class TestCanRun(unittest.TestCase):
             session = open_session(wb_path)  # no workflow_config
             self.assertFalse(session.can_run())
 
+    def test_can_run_false_when_planning_foundation_is_broken(self):
+        with tempfile.TemporaryDirectory() as d:
+            wb_path = os.path.join(d, "test.workbook.md")
+            workbook = _make_run_ready_workbook()
+            workbook.target.sources = []
+            _save_wb(workbook, wb_path)
+            session = open_session(wb_path, workflow_config=_fixture("workflow_config_echo.json"))
+            self.assertFalse(session.can_run())
+
     def test_can_run_false_missing_config_file(self):
         """can_run() must be False when workflow_config path points to a missing file."""
         with tempfile.TemporaryDirectory() as d:
@@ -902,6 +911,16 @@ class TestCanRun(unittest.TestCase):
             self.assertIn("run-ready", reason_text)
             self.assertIn("cases", reason_text)
             self.assertIn("workflow_config", reason_text)
+
+    def test_why_not_reports_planning_issues(self):
+        with tempfile.TemporaryDirectory() as d:
+            wb_path = os.path.join(d, "test.workbook.md")
+            workbook = _make_run_ready_workbook()
+            workbook.brief = ""
+            _save_wb(workbook, wb_path)
+            session = open_session(wb_path, workflow_config=_fixture("workflow_config_echo.json"))
+            reasons = session.why_not()
+            self.assertTrue(any("brief" in reason.lower() for reason in reasons))
 
 
 # ── Structural viability: can_run() / why_not() with non-viable targets ─────
@@ -982,10 +1001,41 @@ class TestStructuralViability(unittest.TestCase):
             reason_text = " ".join(reasons).lower()
             self.assertIn("not found", reason_text)
 
+    def test_command_driver_relative_command_resolves_against_working_dir(self):
+        import shutil
+
+        with tempfile.TemporaryDirectory() as d:
+            workspace = os.path.join(d, "workspace")
+            output = os.path.join(d, "artifacts")
+            os.makedirs(os.path.join(workspace, "adapters"))
+            os.makedirs(output)
+            shutil.copy2(
+                _fixture("adapter_echo.py"),
+                os.path.join(workspace, "adapters", "my_echo.py"),
+            )
+            wb_path = os.path.join(d, "test.workbook.md")
+            _save_wb(_make_run_ready_workbook(), wb_path)
+            cfg_path = os.path.join(output, "wf.json")
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "workflow_id": "test",
+                        "driver": {
+                            "type": "command",
+                            "command": [sys.executable, "adapters/my_echo.py"],
+                            "working_dir": "../workspace",
+                        },
+                    },
+                    fh,
+                )
+            session = open_session(wb_path, workflow_config=cfg_path)
+            self.assertTrue(session.can_run())
+            self.assertEqual(session.why_not(), [])
+
     # ── python-callable driver ──────────────────────────────────────────
 
     def test_python_callable_nonexistent_module(self):
-        """can_run() must be False when the module cannot be imported."""
+        """Dry viability rejects missing modules without importing them."""
         with tempfile.TemporaryDirectory() as d:
             session = self._make_session_with_config(
                 d,
@@ -1001,12 +1051,10 @@ class TestStructuralViability(unittest.TestCase):
                 },
             )
             self.assertFalse(session.can_run())
-            reasons = session.why_not()
-            reason_text = " ".join(reasons).lower()
-            self.assertIn("cannot be imported", reason_text)
+            self.assertIn("not found on the import path", " ".join(session.why_not()))
 
     def test_python_callable_missing_function(self):
-        """can_run() must be False when the function does not exist in the module."""
+        """Dry viability rejects names that are absent from static source."""
         with tempfile.TemporaryDirectory() as d:
             session = self._make_session_with_config(
                 d,
@@ -1022,12 +1070,10 @@ class TestStructuralViability(unittest.TestCase):
                 },
             )
             self.assertFalse(session.can_run())
-            reasons = session.why_not()
-            reason_text = " ".join(reasons).lower()
-            self.assertIn("has no attribute", reason_text)
+            self.assertIn("does not statically bind", " ".join(session.why_not()))
 
     def test_python_callable_not_callable(self):
-        """can_run() must be False when the attribute is not callable."""
+        """can_run() stays dry even when the attribute will fail at runtime."""
         with tempfile.TemporaryDirectory() as d:
             session = self._make_session_with_config(
                 d,
@@ -1042,10 +1088,63 @@ class TestStructuralViability(unittest.TestCase):
                     },
                 },
             )
+            self.assertTrue(session.can_run())
+            self.assertEqual(session.why_not(), [])
+
+    def test_python_callable_invalid_module_syntax_is_rejected_structurally(self):
+        with tempfile.TemporaryDirectory() as d:
+            session = self._make_session_with_config(
+                d,
+                {
+                    "workflow_id": "test",
+                    "provider": "test",
+                    "model": "v1",
+                    "driver": {
+                        "type": "python-callable",
+                        "module": "not-a-valid-module",
+                        "function": "handle",
+                    },
+                },
+            )
             self.assertFalse(session.can_run())
             reasons = session.why_not()
             reason_text = " ".join(reasons).lower()
-            self.assertIn("not callable", reason_text)
+            self.assertIn("valid dotted module path", reason_text)
+
+    def test_state_does_not_import_python_callable_module(self):
+        with tempfile.TemporaryDirectory() as d:
+            marker = os.path.join(d, "imported.txt")
+            module_name = "sideeffect_driver"
+            module_path = os.path.join(d, f"{module_name}.py")
+            with open(module_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "from pathlib import Path\n"
+                    f"Path({marker!r}).write_text('imported', encoding='utf-8')\n"
+                    "def handle(request):\n"
+                    "    return {'raw_response': 'ok', 'parsed_response': {}, 'usage': {'input_tokens': 1, 'output_tokens': 1}}\n"
+                )
+
+            old_sys_path = list(sys.path)
+            sys.path.insert(0, d)
+            try:
+                session = self._make_session_with_config(
+                    d,
+                    {
+                        "workflow_id": "test",
+                        "provider": "test",
+                        "model": "v1",
+                        "driver": {
+                            "type": "python-callable",
+                            "module": module_name,
+                            "function": "handle",
+                        },
+                    },
+                )
+                state = session.state()
+                self.assertTrue(state.run_ready)
+                self.assertFalse(os.path.exists(marker))
+            finally:
+                sys.path[:] = old_sys_path
 
     # ── http driver ─────────────────────────────────────────────────────
 
@@ -1220,6 +1319,106 @@ class TestErrorBoundary(unittest.TestCase):
             with self.assertRaises(EvalError) as ctx:
                 session.run()
             self.assertIn("not run-ready", str(ctx.exception))
+
+    def test_run_with_broken_planning_foundation_raises_eval_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            wb_path = os.path.join(d, "test.workbook.md")
+            workbook = _make_run_ready_workbook()
+            workbook.target.boundary = ""
+            _save_wb(workbook, wb_path)
+            session = open_session(wb_path, workflow_config=_fixture("workflow_config_echo.json"))
+            with self.assertRaises(EvalError) as ctx:
+                session.run()
+            self.assertIn("planning foundation", str(ctx.exception).lower())
+
+    def test_run_with_python_callable_missing_module_stops_before_artifact(self):
+        with tempfile.TemporaryDirectory() as d:
+            wb_path = os.path.join(d, "test.workbook.md")
+            _save_wb(_make_run_ready_workbook(), wb_path)
+            cfg_path = os.path.join(d, "wf.json")
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "workflow_id": "test",
+                        "provider": "test",
+                        "model": "v1",
+                        "driver": {
+                            "type": "python-callable",
+                            "module": "nonexistent_module_xyz_12345",
+                            "function": "handle",
+                        },
+                    },
+                    fh,
+                )
+
+            session = open_session(wb_path, workflow_config=cfg_path)
+            with self.assertRaises(EvalError) as ctx:
+                session.run(output_dir=d)
+            self.assertIn("execution binding broken", str(ctx.exception).lower())
+            self.assertEqual(
+                [],
+                [name for name in os.listdir(d) if name.startswith("run_") and name.endswith(".json")],
+            )
+            self.assertIsNone(open_session(wb_path).state().run_artifact)
+
+    def test_run_with_missing_command_driver_stops_before_artifact(self):
+        with tempfile.TemporaryDirectory() as d:
+            wb_path = os.path.join(d, "test.workbook.md")
+            _save_wb(_make_run_ready_workbook(), wb_path)
+            cfg_path = os.path.join(d, "wf.json")
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "workflow_id": "test",
+                        "provider": "test",
+                        "model": "v1",
+                        "driver": {
+                            "type": "command",
+                            "command": ["/nonexistent/binary_xyz_12345", "--flag"],
+                        },
+                    },
+                    fh,
+                )
+
+            session = open_session(wb_path, workflow_config=cfg_path)
+            with self.assertRaises(EvalError) as ctx:
+                session.run(output_dir=d)
+            self.assertIn("execution binding broken", str(ctx.exception).lower())
+            self.assertEqual(
+                [],
+                [name for name in os.listdir(d) if name.startswith("run_") and name.endswith(".json")],
+            )
+            self.assertIsNone(open_session(wb_path).state().run_artifact)
+
+    def test_run_with_invalid_http_binding_stops_before_artifact(self):
+        with tempfile.TemporaryDirectory() as d:
+            wb_path = os.path.join(d, "test.workbook.md")
+            _save_wb(_make_run_ready_workbook(), wb_path)
+            cfg_path = os.path.join(d, "wf.json")
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "workflow_id": "test",
+                        "provider": "test",
+                        "model": "v1",
+                        "driver": {
+                            "type": "http",
+                            "url": "localhost:8080/api",
+                            "method": "POST",
+                        },
+                    },
+                    fh,
+                )
+
+            session = open_session(wb_path, workflow_config=cfg_path)
+            with self.assertRaises(EvalError) as ctx:
+                session.run(output_dir=d)
+            self.assertIn("execution binding broken", str(ctx.exception).lower())
+            self.assertEqual(
+                [],
+                [name for name in os.listdir(d) if name.startswith("run_") and name.endswith(".json")],
+            )
+            self.assertIsNone(open_session(wb_path).state().run_artifact)
 
 
 # ── open_session validation ──────────────────────────────────────────────────

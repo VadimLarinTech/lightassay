@@ -88,11 +88,15 @@ class CommandDriverConfig:
     command (e.g. ``["python3", "my_adapter.py"]``).
 
     ``config_dir`` is the absolute path to the directory containing the
-    workflow config file.  When set, the subprocess runs with this as its
-    working directory, so relative paths in the command array resolve
-    against the config file location rather than the caller's cwd.
-    This field is injected by ``load_workflow_config``, not by the user's
-    JSON config.
+    workflow config file. It is injected by ``load_workflow_config`` and
+    kept for diagnostics / backwards-compatible introspection.
+
+    ``working_dir`` is the effective subprocess working directory. When
+    unset by JSON config, ``load_workflow_config`` defaults it to
+    ``config_dir`` so existing config-origin semantics stay unchanged.
+    Generated quickstart configs may set it explicitly to the workspace
+    root so ``--output-dir`` does not accidentally become the command
+    driver's cwd.
 
     The subprocess receives the adapter request JSON on stdin and must
     write the adapter response JSON to stdout, identical to the raw
@@ -101,6 +105,7 @@ class CommandDriverConfig:
 
     command: list[str]
     config_dir: str | None = None
+    working_dir: str | None = None
 
 
 DriverConfig = Union[
@@ -116,6 +121,7 @@ _PYTHON_CALLABLE_REQUIRED = {"module", "function"}
 _HTTP_REQUIRED = {"url", "method"}
 _HTTP_OPTIONAL = {"headers", "timeout_seconds"}
 _COMMAND_REQUIRED = {"command"}
+_COMMAND_OPTIONAL = {"working_dir"}
 
 
 def validate_driver_config(data: dict) -> DriverConfig:
@@ -236,12 +242,13 @@ def _validate_http(fields: dict) -> HttpDriverConfig:
 
 
 def _validate_command(fields: dict) -> CommandDriverConfig:
-    unknown = set(fields.keys()) - _COMMAND_REQUIRED
+    allowed = _COMMAND_REQUIRED | _COMMAND_OPTIONAL
+    unknown = set(fields.keys()) - allowed
     if unknown:
         raise ValueError(
             f"command driver has unknown fields: "
             f"{', '.join(sorted(unknown))}. "
-            f"Allowed: {', '.join(sorted(_COMMAND_REQUIRED))}"
+            f"Allowed: {', '.join(sorted(allowed))}"
         )
 
     if "command" not in fields:
@@ -262,7 +269,18 @@ def _validate_command(fields: dict) -> CommandDriverConfig:
         if not item.strip():
             raise ValueError(f"command driver field 'command[{i}]' must be non-empty")
 
-    return CommandDriverConfig(command=cmd)
+    working_dir = None
+    if "working_dir" in fields:
+        working_dir = fields["working_dir"]
+        if not isinstance(working_dir, str):
+            raise ValueError(
+                "command driver field 'working_dir' must be a string, "
+                f"got {type(working_dir).__name__}"
+            )
+        if not working_dir.strip():
+            raise ValueError("command driver field 'working_dir' must be non-empty")
+
+    return CommandDriverConfig(command=cmd, working_dir=working_dir)
 
 
 # ── Driver dispatch ─────────────────────────────────────────────────────────

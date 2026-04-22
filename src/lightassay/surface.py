@@ -22,7 +22,11 @@ confidence, suggested actions, and bounded recovery options.
 
 from __future__ import annotations
 
+import ast
 import os
+import re
+import sys
+from importlib.machinery import PathFinder
 
 from .diagnostics import (
     RECOVERY_ADVANCE_PREPARATION,
@@ -185,7 +189,12 @@ def _build_eval_state(
     planning_ready = len(_planning_readiness_issues(workbook)) == 0
     execution_binding_ready = _validate_workflow_config(workflow_config_path) is None
     workbook_run_ready = workbook.run_readiness.run_ready
-    run_ready = workbook_run_ready and bool(workbook.cases) and execution_binding_ready
+    run_ready = (
+        planning_ready
+        and workbook_run_ready
+        and bool(workbook.cases)
+        and execution_binding_ready
+    )
 
     return EvalState(
         workbook_path=workbook_path,
@@ -283,25 +292,136 @@ def _check_driver_viability(driver_config) -> str | None:
 
 
 def _check_python_callable_viability(config) -> str | None:
-    """Check that the python-callable module is importable and the function exists."""
-    import importlib
+    """Check python-callable viability without importing target code.
 
-    try:
-        module = importlib.import_module(config.module)
-    except ImportError as exc:
-        return f"python-callable driver: module {config.module!r} cannot be imported: {exc}"
+    ``state()`` / ``can_run()`` / ``why_not()`` must remain dry, so this
+    check validates the static identifier shape, verifies that the module
+    can be found on the import path without importing it, and, when source
+    code is available, performs a best-effort static check that the module
+    binds the requested name somewhere at top level. Final importability
+    and callability are still enforced later in the real run path.
+    """
+    identifier = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-    if not hasattr(module, config.function):
+    parts = config.module.split(".")
+    if not parts or any(not part or not identifier.match(part) for part in parts):
+        return f"python-callable driver: module {config.module!r} is not a valid dotted module path."
+    if not identifier.match(config.function):
         return (
-            f"python-callable driver: module {config.module!r} "
-            f"has no attribute {config.function!r}."
+            "python-callable driver: function name "
+            f"{config.function!r} is not a valid Python identifier."
         )
+    module_spec = _find_module_spec_without_import(config.module)
+    if module_spec is None:
+        return f"python-callable driver: module {config.module!r} not found on the import path."
 
-    func = getattr(module, config.function)
-    if not callable(func):
-        return f"python-callable driver: {config.module}.{config.function} is not callable."
-
+    static_name_check = _check_python_callable_name_from_source(
+        module_name=config.module,
+        function_name=config.function,
+        module_spec=module_spec,
+    )
+    if static_name_check is not None:
+        return static_name_check
     return None
+
+
+def _find_module_spec_without_import(module_name: str):
+    """Resolve *module_name* through ``PathFinder`` without importing it."""
+    search_path = list(sys.path)
+    spec = None
+    parts = module_name.split(".")
+    for index in range(len(parts)):
+        fullname = ".".join(parts[: index + 1])
+        spec = PathFinder.find_spec(fullname, search_path)
+        if spec is None:
+            return None
+        if index < len(parts) - 1:
+            search_locations = spec.submodule_search_locations
+            if search_locations is None:
+                return None
+            search_path = list(search_locations)
+    return spec
+
+
+def _check_python_callable_name_from_source(
+    *,
+    module_name: str,
+    function_name: str,
+    module_spec,
+) -> str | None:
+    """Best-effort static validation that *function_name* is bound in source.
+
+    When loader/source information is unavailable we stay permissive and
+    defer the final callable check to the real run path.
+    """
+    loader = getattr(module_spec, "loader", None)
+    if loader is None or not hasattr(loader, "get_source"):
+        return None
+    try:
+        source = loader.get_source(module_name)
+    except (ImportError, OSError):
+        return None
+    if not source:
+        return None
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+
+    if _module_binds_name_statically(tree, function_name):
+        return None
+    return (
+        "python-callable driver: module "
+        f"{module_name!r} does not statically bind {function_name!r}."
+    )
+
+
+def _module_binds_name_statically(tree: ast.AST, name: str) -> bool:
+    """Return whether module source binds *name* at top level.
+
+    This is intentionally a best-effort dry check; dynamic module-level
+    exports remain the responsibility of the actual run path.
+    """
+    if not isinstance(tree, ast.Module):
+        return False
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == name:
+                return True
+            continue
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bound_name = alias.asname or alias.name.split(".")[0]
+                if bound_name == name:
+                    return True
+            continue
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                bound_name = alias.asname or alias.name
+                if bound_name == name:
+                    return True
+            continue
+        if isinstance(node, ast.Assign):
+            if any(_target_binds_name(target, name) for target in node.targets):
+                return True
+            continue
+        if isinstance(node, ast.AnnAssign):
+            if _target_binds_name(node.target, name):
+                return True
+            continue
+        if isinstance(node, ast.AugAssign):
+            if _target_binds_name(node.target, name):
+                return True
+            continue
+    return False
+
+
+def _target_binds_name(target: ast.AST, name: str) -> bool:
+    if isinstance(target, ast.Name):
+        return target.id == name
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return any(_target_binds_name(item, name) for item in target.elts)
+    return False
 
 
 def _check_http_viability(config) -> str | None:
@@ -309,23 +429,40 @@ def _check_http_viability(config) -> str | None:
 
     No runtime reachability check — only structural URL validity.
     """
+    safe_url = _redact_url_for_message(config.url)
     from urllib.parse import urlparse
 
     parsed = urlparse(config.url)
     if not parsed.scheme:
-        return f"http driver: URL {config.url!r} has no scheme."
+        return f"http driver: URL {safe_url!r} has no scheme."
     if not parsed.netloc:
-        return f"http driver: URL {config.url!r} has no host."
+        return f"http driver: URL {safe_url!r} has no host."
     return None
+
+
+def _redact_url_for_message(url: str) -> str:
+    """Return a URL form safe for human-facing diagnostics."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    scheme = parsed.scheme or "<missing-scheme>"
+    host = parsed.hostname or "<missing-host>"
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        parsed_port = None
+    port = f":{parsed_port}" if parsed_port is not None else ""
+    suffix = "/..." if (parsed.path or parsed.params or parsed.query or parsed.fragment) else ""
+    return f"{scheme}://{host}{port}{suffix}"
 
 
 def _check_command_viability(config) -> str | None:
     """Check that the command driver's command[0] is findable.
 
-    When ``config.config_dir`` is set (config-origin semantics), relative
-    command paths are resolved against the config directory, matching the
-    runtime ``cwd`` behavior of the command driver.  This keeps structural
-    viability aligned with runtime execution semantics.
+    Relative command paths are resolved against the effective command
+    working directory. When ``working_dir`` is set, it wins; otherwise
+    ``config_dir`` preserves the older config-origin behavior. This keeps
+    structural viability aligned with runtime execution semantics.
     """
     import shutil
 
@@ -335,9 +472,11 @@ def _check_command_viability(config) -> str | None:
     if shutil.which(cmd) is not None:
         return None
 
-    # Resolve against config_dir if available, otherwise check raw path.
-    if config.config_dir is not None:
-        resolved = os.path.normpath(os.path.join(config.config_dir, cmd))
+    # Resolve against the effective command cwd when available, otherwise
+    # against config_dir for older in-memory configs, otherwise check raw path.
+    command_root = config.working_dir or config.config_dir
+    if command_root is not None:
+        resolved = os.path.normpath(os.path.join(command_root, cmd))
     else:
         resolved = cmd
 
@@ -1128,7 +1267,7 @@ def explore_workbook(
                 ],
             ),
         )
-    if not isinstance(max_cases, int) or max_cases <= 0:
+    if not isinstance(max_cases, int) or isinstance(max_cases, bool) or max_cases <= 0:
         raise EvalError(
             f"Invalid max_cases: {max_cases!r}. max_cases must be a positive integer.",
             diagnostics=_build_reactive_report(
@@ -1145,7 +1284,11 @@ def explore_workbook(
                 ],
             ),
         )
-    if not isinstance(max_iterations, int) or max_iterations <= 0:
+    if (
+        not isinstance(max_iterations, int)
+        or isinstance(max_iterations, bool)
+        or max_iterations <= 0
+    ):
         raise EvalError(
             f"Invalid max_iterations: {max_iterations!r}. max_iterations must be a positive integer.",  # noqa: E501
             diagnostics=_build_reactive_report(
@@ -1923,8 +2066,9 @@ class EvalSession:
     def can_run(self) -> bool:
         """Check whether the workbook is ready for a run.
 
-        Returns ``True`` only when ``RUN_READY: yes``, cases exist,
-        and ``workflow_config`` points to an existing, parseable config file.
+        Returns ``True`` only when the workbook is planning-ready,
+        ``RUN_READY: yes``, cases exist, and ``workflow_config`` points
+        to an existing, parseable config file.
         """
         self._check_released()
         workbook = _read_workbook(self._workbook_path)
@@ -1944,6 +2088,7 @@ class EvalSession:
         self._check_released()
         workbook = _read_workbook(self._workbook_path)
         reasons: list[str] = []
+        reasons.extend(_planning_readiness_issues(workbook))
 
         if not workbook.run_readiness.run_ready:
             reasons.append("Workbook is not run-ready (RUN_READY: no).")
@@ -2037,6 +2182,33 @@ class EvalSession:
 
         # Read workbook.
         workbook = _read_workbook(self._workbook_path)
+        planning_issues = _planning_readiness_issues(workbook)
+
+        if planning_issues:
+            raise EvalError(
+                "Cannot run: workbook planning foundation is incomplete.",
+                diagnostics=_build_reactive_report(
+                    diagnosis="Workbook planning foundation is incomplete.",
+                    evidence=[
+                        DiagnosticEvidence(
+                            field="planning_ready",
+                            observed="False",
+                            expected="True",
+                        ),
+                        *[
+                            DiagnosticEvidence(
+                                field="planning_issue",
+                                observed=issue,
+                                expected="planning foundation complete",
+                            )
+                            for issue in planning_issues
+                        ],
+                    ],
+                    suggested_actions=[
+                        "Fill the target fields, source references, and brief before running.",
+                    ],
+                ),
+            )
 
         if not workbook.run_readiness.run_ready:
             raise EvalError(
@@ -2090,8 +2262,8 @@ class EvalSession:
                         )
                     ],
                     suggested_actions=[
-                        "Check that the workflow adapter exists and is executable.",
-                        "Verify the workflow config references a working adapter.",
+                        "Check that the workflow execution binding exists and is runnable.",
+                        "Verify the workflow config references a working adapter or driver.",
                     ],
                 ),
             ) from exc

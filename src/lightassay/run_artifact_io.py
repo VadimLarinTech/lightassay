@@ -242,7 +242,7 @@ def _parse_cases(cases_data: list[Any]) -> list[CaseRecord]:
                 )
 
         # Type-check duration_ms.
-        if not isinstance(item["duration_ms"], int):
+        if not isinstance(item["duration_ms"], int) or isinstance(item["duration_ms"], bool):
             raise RunError(
                 f"Case record [{i}] field 'duration_ms' must be an integer, "
                 f"got {type(item['duration_ms']).__name__}"
@@ -272,7 +272,9 @@ def _parse_cases(cases_data: list[Any]) -> list[CaseRecord]:
             for ufield in ("input_tokens", "output_tokens"):
                 if ufield not in item["usage"]:
                     raise RunError(f"Case record [{i}] usage missing field: {ufield!r}")
-                if not isinstance(item["usage"][ufield], int):
+                if not isinstance(item["usage"][ufield], int) or isinstance(
+                    item["usage"][ufield], bool
+                ):
                     raise RunError(
                         f"Case record [{i}] usage field {ufield!r} must be an integer, "
                         f"got {type(item['usage'][ufield]).__name__}"
@@ -328,7 +330,7 @@ def _parse_aggregate(agg_data: Any) -> Aggregate:
     for field in _REQUIRED_AGGREGATE_FIELDS:
         if field not in agg_data:
             raise RunError(f"Run artifact aggregate missing field: {field!r}")
-        if not isinstance(agg_data[field], int):
+        if not isinstance(agg_data[field], int) or isinstance(agg_data[field], bool):
             raise RunError(
                 f"Run artifact aggregate field {field!r} must be an integer, "
                 f"got {type(agg_data[field]).__name__}"

@@ -38,10 +38,12 @@ from lightassay.adapter_pack import (
     execute_driver,
     validate_driver_config,
 )
+from lightassay.bootstrap import EXEC_SHAPE_COMMAND, ExecutionShape
 from lightassay.errors import WorkflowConfigError
 from lightassay.runner import execute_run
 from lightassay.workbook_parser import parse
 from lightassay.workflow_config import LLMMetadata, WorkflowConfig, load_workflow_config
+from lightassay.workflow_config_builder import write_workflow_config
 
 _PYTHON = sys.executable
 _REPO = os.path.join(os.path.dirname(__file__), "..")
@@ -285,6 +287,19 @@ class TestDriverConfigValidation(unittest.TestCase):
         )
         self.assertIsInstance(cfg, CommandDriverConfig)
         self.assertEqual(cfg.command, ["python3", "my_script.py"])
+        self.assertIsNone(cfg.working_dir)
+
+    def test_command_valid_with_working_dir(self):
+        cfg = validate_driver_config(
+            {
+                "type": "command",
+                "command": ["python3", "my_script.py"],
+                "working_dir": "/tmp/project",
+            }
+        )
+        self.assertIsInstance(cfg, CommandDriverConfig)
+        self.assertEqual(cfg.command, ["python3", "my_script.py"])
+        self.assertEqual(cfg.working_dir, "/tmp/project")
 
     def test_command_missing_command(self):
         with self.assertRaises(ValueError) as ctx:
@@ -331,6 +346,28 @@ class TestDriverConfigValidation(unittest.TestCase):
                 }
             )
         self.assertIn("non-empty", str(ctx.exception))
+
+    def test_command_non_string_working_dir(self):
+        with self.assertRaises(ValueError) as ctx:
+            validate_driver_config(
+                {
+                    "type": "command",
+                    "command": ["python3", "my_script.py"],
+                    "working_dir": 123,
+                }
+            )
+        self.assertIn("working_dir", str(ctx.exception))
+
+    def test_command_empty_working_dir(self):
+        with self.assertRaises(ValueError) as ctx:
+            validate_driver_config(
+                {
+                    "type": "command",
+                    "command": ["python3", "my_script.py"],
+                    "working_dir": "   ",
+                }
+            )
+        self.assertIn("working_dir", str(ctx.exception))
 
     def test_command_unknown_field(self):
         with self.assertRaises(ValueError) as ctx:
@@ -573,6 +610,7 @@ class TestCommandDriver(unittest.TestCase):
             cfg = CommandDriverConfig(
                 command=[_PYTHON, "scripts/echo_adapter.py"],
                 config_dir=tmpdir,
+                working_dir=tmpdir,
             )
             request = {
                 "case_id": "c1",
@@ -598,6 +636,7 @@ class TestCommandDriver(unittest.TestCase):
         cfg = CommandDriverConfig(
             command=[_PYTHON, _fixture("adapter_echo.py")],
             config_dir=None,
+            working_dir=None,
         )
         response = execute_driver(
             cfg,
@@ -624,9 +663,32 @@ class TestCommandDriverConfigOrigin(unittest.TestCase):
         config = load_workflow_config(_fixture("workflow_driver_command.json"))
         self.assertIsInstance(config.driver, CommandDriverConfig)
         self.assertIsNotNone(config.driver.config_dir)
+        self.assertEqual(config.driver.working_dir, config.driver.config_dir)
         # config_dir must be the directory containing the config file.
         expected_dir = os.path.dirname(os.path.abspath(_fixture("workflow_driver_command.json")))
         self.assertEqual(config.driver.config_dir, expected_dir)
+
+    def test_explicit_working_dir_set_on_load(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = os.path.join(tmpdir, "workflow.json")
+            with open(config_path, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "workflow_id": "origin-test",
+                        "driver": {
+                            "type": "command",
+                            "command": [_PYTHON, "adapters/my_echo.py"],
+                            "working_dir": "../workspace",
+                        },
+                    },
+                    fh,
+                )
+            config = load_workflow_config(config_path)
+            self.assertEqual(config.driver.config_dir, tmpdir)
+            self.assertEqual(
+                config.driver.working_dir,
+                os.path.normpath(os.path.join(tmpdir, "../workspace")),
+            )
 
     def test_config_dir_not_set_on_non_command_driver(self):
         """Non-command drivers should not have config_dir."""
@@ -688,6 +750,28 @@ class TestCommandDriverConfigOrigin(unittest.TestCase):
             for cr in artifact.cases:
                 self.assertEqual(cr.status, "completed")
                 self.assertTrue(cr.raw_response.startswith("Echo: "))
+
+    def test_generated_command_config_keeps_workspace_root_as_working_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = os.path.join(tmpdir, "artifacts")
+            workspace = os.path.join(tmpdir, "workspace")
+            os.makedirs(output_dir)
+            os.makedirs(workspace)
+            path = os.path.join(output_dir, "generated.workflow.json")
+            config = write_workflow_config(
+                ExecutionShape(type=EXEC_SHAPE_COMMAND, command=[_PYTHON, "adapter.py"]),
+                workflow_id="generated-cmd",
+                llm_metadata=LLMMetadata(provider=None, model=None),
+                path=path,
+                workspace_root=workspace,
+            )
+            self.assertIsInstance(config.driver, CommandDriverConfig)
+            self.assertEqual(config.driver.config_dir, output_dir)
+            self.assertEqual(config.driver.working_dir, workspace)
+
+            with open(path, encoding="utf-8") as fh:
+                raw = json.load(fh)
+            self.assertEqual(raw["driver"]["working_dir"], os.path.abspath(workspace))
 
 
 # ── HTTP Driver Tests ───────────────────────────────────────────────────────
@@ -856,6 +940,23 @@ class TestHttpDriver(unittest.TestCase):
         with self.assertRaises(DriverError) as ctx:
             execute_driver(cfg, {"input": "test"})
         self.assertIn("connection failed", str(ctx.exception).lower())
+
+    def test_error_messages_redact_sensitive_url_parts(self):
+        cfg = HttpDriverConfig(
+            url="http://user:password@127.0.0.1:1/private/path?token=secret#frag",
+            method="POST",
+            headers={"Authorization": "Bearer secret"},
+            timeout_seconds=1,
+        )
+        with self.assertRaises(DriverError) as ctx:
+            execute_driver(cfg, {"input": "test"})
+        message = str(ctx.exception)
+        self.assertIn("127.0.0.1", message)
+        self.assertNotIn("user", message)
+        self.assertNotIn("password", message)
+        self.assertNotIn("token=secret", message)
+        self.assertNotIn("/private/path", message)
+        self.assertNotIn("Bearer secret", message)
 
 
 # ── Full Run-Path Integration Tests ─────────────────────────────────────────

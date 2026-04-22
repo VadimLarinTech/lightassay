@@ -17,6 +17,22 @@ import urllib.request
 from . import DriverError, HttpDriverConfig
 
 
+def _safe_url_for_error(url: str) -> str:
+    """Return a URL form safe for human-facing error messages."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    scheme = parsed.scheme or "<missing-scheme>"
+    host = parsed.hostname or "<missing-host>"
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        parsed_port = None
+    port = f":{parsed_port}" if parsed_port is not None else ""
+    suffix = "/..." if (parsed.path or parsed.params or parsed.query or parsed.fragment) else ""
+    return f"{scheme}://{host}{port}{suffix}"
+
+
 def execute(config: HttpDriverConfig, request_data: dict) -> dict:
     """Execute the http driver.
 
@@ -50,16 +66,19 @@ def execute(config: HttpDriverConfig, request_data: dict) -> dict:
                 ) from exc
     except urllib.error.HTTPError as exc:
         exc.close()
-        raise DriverError(f"http driver: HTTP {exc.code} from {config.url!r}") from exc
+        raise DriverError(
+            f"http driver: HTTP {exc.code} from {_safe_url_for_error(config.url)!r}"
+        ) from exc
     except urllib.error.URLError as exc:
         raise DriverError(
-            f"http driver: connection failed to {config.url!r}: {exc.reason}"
+            f"http driver: connection failed to {_safe_url_for_error(config.url)!r}: {exc.reason}"
         ) from exc
     except DriverError:
         raise
     except Exception as exc:
         raise DriverError(
-            f"http driver: request failed to {config.url!r}: {type(exc).__name__}: {exc}"
+            "http driver: request failed to "
+            f"{_safe_url_for_error(config.url)!r}: {type(exc).__name__}: {exc}"
         ) from exc
 
     try:

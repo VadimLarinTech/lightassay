@@ -15,8 +15,10 @@ same strict response validation.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
+import shutil
 import subprocess
 import time
 import uuid
@@ -58,13 +60,7 @@ def execute_run(
     executable.  Individual case failures are recorded in the case records,
     not raised.
     """
-    # Pre-condition: validate legacy adapter path.
-    if config.adapter is not None:
-        adapter = config.adapter
-        if not os.path.exists(adapter):
-            raise RunError(f"Adapter not found: {adapter!r}")
-        if not os.access(adapter, os.X_OK):
-            raise RunError(f"Adapter not executable: {adapter!r}")
+    _validate_execution_binding_before_run(config)
 
     run_id = uuid.uuid4().hex[:12]
     workbook_sha = compute_sha256(workbook_path)
@@ -103,6 +99,74 @@ def execute_run(
         cases=case_records,
         aggregate=aggregate,
     )
+
+
+def _validate_execution_binding_before_run(config: WorkflowConfig) -> None:
+    """Hard-stop on broken execution bindings before any case loop starts."""
+    if config.adapter is not None:
+        adapter = config.adapter
+        if not os.path.exists(adapter):
+            raise RunError(f"Execution binding broken: adapter not found: {adapter!r}")
+        if not os.access(adapter, os.X_OK):
+            raise RunError(f"Execution binding broken: adapter not executable: {adapter!r}")
+        return
+
+    driver = config.driver
+    if driver is None:
+        return
+
+    from .adapter_pack import CommandDriverConfig, HttpDriverConfig, PythonCallableDriverConfig
+
+    if isinstance(driver, PythonCallableDriverConfig):
+        try:
+            module = importlib.import_module(driver.module)
+        except ImportError as exc:
+            raise RunError(
+                "Execution binding broken: python-callable driver module "
+                f"{driver.module!r} cannot be imported: {exc}"
+            ) from exc
+        if not hasattr(module, driver.function):
+            raise RunError(
+                "Execution binding broken: python-callable driver module "
+                f"{driver.module!r} has no attribute {driver.function!r}"
+            )
+        func = getattr(module, driver.function)
+        if not callable(func):
+            raise RunError(
+                "Execution binding broken: python-callable driver "
+                f"{driver.module}.{driver.function} is not callable"
+            )
+        return
+
+    if isinstance(driver, HttpDriverConfig):
+        from urllib.parse import urlparse
+
+        parsed = urlparse(driver.url)
+        if not parsed.scheme:
+            raise RunError(
+                f"Execution binding broken: http driver URL {driver.url!r} has no scheme"
+            )
+        if not parsed.netloc:
+            raise RunError(
+                f"Execution binding broken: http driver URL {driver.url!r} has no host"
+            )
+        return
+
+    if isinstance(driver, CommandDriverConfig):
+        cmd = driver.command[0]
+        if shutil.which(cmd) is not None:
+            return
+        command_root = driver.working_dir or driver.config_dir
+        resolved = os.path.normpath(os.path.join(command_root, cmd)) if command_root else cmd
+        if not os.path.exists(resolved):
+            raise RunError(
+                f"Execution binding broken: command driver executable not found: {cmd!r}"
+            )
+        if not os.access(resolved, os.X_OK):
+            raise RunError(
+                f"Execution binding broken: command driver executable not executable: {resolved!r}"
+            )
+        return
 
 
 def _build_request(config: WorkflowConfig, case: Case) -> dict:
@@ -233,7 +297,7 @@ def _validate_and_build_record(case: Case, duration_ms: int, response: dict) -> 
                 duration_ms,
                 f"Adapter response missing required field: 'usage.{ufield}'",
             )
-        if not isinstance(usage_data[ufield], int):
+        if not isinstance(usage_data[ufield], int) or isinstance(usage_data[ufield], bool):
             return _failed_case(
                 case,
                 duration_ms,
