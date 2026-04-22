@@ -246,8 +246,7 @@ def _redact_config_for_log(value):
                 result[key] = _redact_mapping(item)
             elif key == "command" and isinstance(item, list):
                 result[key] = [
-                    str(part)
-                    for part in _redact_command_tokens([str(part) for part in item])
+                    str(part) for part in _redact_command_tokens([str(part) for part in item])
                 ]
             elif _is_sensitive_key(key):
                 result[key] = "<redacted>"

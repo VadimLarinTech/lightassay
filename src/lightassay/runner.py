@@ -147,9 +147,7 @@ def _validate_execution_binding_before_run(config: WorkflowConfig) -> None:
                 f"Execution binding broken: http driver URL {driver.url!r} has no scheme"
             )
         if not parsed.netloc:
-            raise RunError(
-                f"Execution binding broken: http driver URL {driver.url!r} has no host"
-            )
+            raise RunError(f"Execution binding broken: http driver URL {driver.url!r} has no host")
         return
 
     if isinstance(driver, CommandDriverConfig):

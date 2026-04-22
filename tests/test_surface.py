@@ -1357,7 +1357,11 @@ class TestErrorBoundary(unittest.TestCase):
             self.assertIn("execution binding broken", str(ctx.exception).lower())
             self.assertEqual(
                 [],
-                [name for name in os.listdir(d) if name.startswith("run_") and name.endswith(".json")],
+                [
+                    name
+                    for name in os.listdir(d)
+                    if name.startswith("run_") and name.endswith(".json")
+                ],
             )
             self.assertIsNone(open_session(wb_path).state().run_artifact)
 
@@ -1386,7 +1390,11 @@ class TestErrorBoundary(unittest.TestCase):
             self.assertIn("execution binding broken", str(ctx.exception).lower())
             self.assertEqual(
                 [],
-                [name for name in os.listdir(d) if name.startswith("run_") and name.endswith(".json")],
+                [
+                    name
+                    for name in os.listdir(d)
+                    if name.startswith("run_") and name.endswith(".json")
+                ],
             )
             self.assertIsNone(open_session(wb_path).state().run_artifact)
 
@@ -1416,7 +1424,11 @@ class TestErrorBoundary(unittest.TestCase):
             self.assertIn("execution binding broken", str(ctx.exception).lower())
             self.assertEqual(
                 [],
-                [name for name in os.listdir(d) if name.startswith("run_") and name.endswith(".json")],
+                [
+                    name
+                    for name in os.listdir(d)
+                    if name.startswith("run_") and name.endswith(".json")
+                ],
             )
             self.assertIsNone(open_session(wb_path).state().run_artifact)
 

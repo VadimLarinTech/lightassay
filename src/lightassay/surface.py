@@ -190,10 +190,7 @@ def _build_eval_state(
     execution_binding_ready = _validate_workflow_config(workflow_config_path) is None
     workbook_run_ready = workbook.run_readiness.run_ready
     run_ready = (
-        planning_ready
-        and workbook_run_ready
-        and bool(workbook.cases)
-        and execution_binding_ready
+        planning_ready and workbook_run_ready and bool(workbook.cases) and execution_binding_ready
     )
 
     return EvalState(
@@ -305,7 +302,9 @@ def _check_python_callable_viability(config) -> str | None:
 
     parts = config.module.split(".")
     if not parts or any(not part or not identifier.match(part) for part in parts):
-        return f"python-callable driver: module {config.module!r} is not a valid dotted module path."
+        return (
+            f"python-callable driver: module {config.module!r} is not a valid dotted module path."
+        )
     if not identifier.match(config.function):
         return (
             "python-callable driver: function name "

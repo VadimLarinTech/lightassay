@@ -10,8 +10,8 @@ Run with:
 
 from __future__ import annotations
 
-import json
 import io
+import json
 import os
 import subprocess
 import sys
@@ -25,12 +25,12 @@ _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 if _SRC not in sys.path:
     sys.path.insert(0, os.path.abspath(_SRC))
 
+import lightassay.cli as cli_mod
 from lightassay import (
     EvalError,
     continue_workbook,
     quickstart,
 )
-import lightassay.cli as cli_mod
 from lightassay.runtime_state import (
     execution_log_path,
     get_active_workbook,
@@ -496,9 +496,7 @@ class TestContinueEndToEnd(unittest.TestCase):
 
         with open(self.quickstart_result.workbook_path, encoding="utf-8") as fh:
             workbook = parse(fh.read())
-        self.assertEqual(
-            workbook.artifact_references.run, self.quickstart_result.run_artifact_path
-        )
+        self.assertEqual(workbook.artifact_references.run, self.quickstart_result.run_artifact_path)
 
     def test_continue_uses_explicit_workbook_path_when_provided(self):
         # Remove the active workbook pointer to force the explicit path
