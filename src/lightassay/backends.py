@@ -1,8 +1,9 @@
 """Built-in backend registry.
 
-A *backend* is a named bundle of a preparation adapter and a semantic
-adapter. When the user passes ``--backend <name>`` on the CLI (or
-``backend=<name>`` through the library), lightassay resolves this into
+A *backend* is the internal implementation term for a named bundle of a
+preparation adapter and a semantic adapter. When the user selects an
+agent such as ``claude-cli`` or ``codex-cli`` on the CLI (or passes
+``agent=<name>`` through the library), lightassay resolves this into
 fully-constructed :class:`PreparationConfig` and :class:`SemanticConfig`
 objects that invoke the matching module from
 :mod:`lightassay.builtin_adapters`.

@@ -146,6 +146,9 @@ both `target` and `execution_shape`; quickstart then stops with that question.
 `resolution_notes` is optional freeform bootstrap context that lightassay may
 place into the workbook's additional-context section. It must not contain
 system-authored planning boilerplate disguised as human priorities.
+`quickstart_constraints` are advisory planning guidance, not a hard runtime cap.
+Adapters should try to honor them, but code does not clip or reject larger
+suites solely for exceeding these values.
 
 ## Operation: generate_directions
 
@@ -227,7 +230,7 @@ system-authored planning boilerplate disguised as human priorities.
 | `directions[].testing_lens` | string | yes | Which testing lens this direction uses. Must be non-empty. |
 | `directions[].covered_user_priority_sections` | array of strings | yes | Non-empty list of user-priority section IDs explicitly covered by the direction. |
 | `directions[].source_rationale` | string | yes | Non-empty explanation of why this direction is grounded in the provided source context. |
-| `priority_conflicts` | array | yes | Explicitly declared user-priority conflicts or uncovered areas. Use an empty list when none exist. |
+| `priority_conflicts` | array | tolerated missing | Explicitly declared user-priority conflicts or uncovered areas. Use an empty list when none exist. Runtime accepts a missing key as `[]` for compatibility; adapters should still include it when they have something explicit to report. |
 
 ### Preconditions (validated before adapter call)
 
@@ -334,7 +337,7 @@ that still use the normal workbook model.
 | `cases[].source_rationale` | string | yes | Non-empty source-grounded rationale for why this case exists. |
 | `cases[].context` | string or null | no | Optional context. |
 | `cases[].notes` | string or null | no | Optional notes. |
-| `priority_conflicts` | array | yes | Explicitly declared user-priority conflicts or uncovered areas. Use an empty list when none exist. |
+| `priority_conflicts` | array | tolerated missing | Explicitly declared user-priority conflicts or uncovered areas. Use an empty list when none exist. Runtime accepts a missing key as `[]` for compatibility; adapters should still include it when they have something explicit to report. |
 
 ### Post-validation (after adapter response)
 
@@ -436,7 +439,7 @@ that still use the normal workbook model.
 | `cases` | array | yes | Reconciled cases (same shape as generate_cases response). |
 | `run_ready` | boolean | yes | Whether the workbook is ready for a run. |
 | `readiness_note` | string | yes | Explanation of readiness decision. Must be non-empty when `run_ready` is `false` (the adapter must explain why the workbook is not ready). May be empty when `run_ready` is `true`. |
-| `priority_conflicts` | array | yes | Explicitly declared user-priority conflicts or uncovered areas. Use an empty list when none exist. |
+| `priority_conflicts` | array | tolerated missing | Explicitly declared user-priority conflicts or uncovered areas. Use an empty list when none exist. Runtime accepts a missing key as `[]` for compatibility; adapters should still include it when they have something explicit to report. |
 
 ### Post-validation (after adapter response)
 

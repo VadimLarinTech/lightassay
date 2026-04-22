@@ -151,8 +151,7 @@ class QuickstartResult:
     """Result of an end-to-end ``quickstart`` orchestration.
 
     Quickstart always runs bootstrap → preparation → run → analyze.
-    ``compare_artifact_path`` is always ``None`` — compare is not part
-    of quickstart.
+    Compare is intentionally not part of quickstart.
     """
 
     workbook_path: str
