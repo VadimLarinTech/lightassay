@@ -19,6 +19,7 @@ import shlex
 import shutil
 import sys
 
+from . import __version__
 from .errors import EvalError
 from .surface import (
     agent_cli_requirement,
@@ -47,6 +48,7 @@ _QUICKSTART_USAGE = (
     "[--preparation-config PREPARATION_CONFIG] "
     "[--semantic-config SEMANTIC_CONFIG] [--output-dir OUTPUT_DIR] [--quiet]"
 )
+_EXECUTION_BINDING_STAGE = "Execution binding"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version="%(prog)s 0.3.1",
+        version=f"%(prog)s {__version__}",
     )
 
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
@@ -199,7 +201,10 @@ def build_parser() -> argparse.ArgumentParser:
     quickstart_parser.add_argument(
         "--quiet",
         action="store_true",
-        help="Suppress incremental stage status output (final summary still prints).",
+        help=(
+            "Suppress incremental stage status output. "
+            "The resolved execution binding summary and final summary still print."
+        ),
     )
 
     # continue
@@ -484,6 +489,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    compare_parser.set_defaults(_command_parser=compare_parser)
     compare_parser.add_argument(
         "run_artifacts",
         nargs="+",
@@ -579,11 +585,54 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _make_reporter(quiet: bool):
+    class _QuietReporter:
+        def __init__(self, stream) -> None:
+            self._stream = stream
+
+        def __call__(self, stage: str, status: str, detail: str) -> None:
+            if stage != _EXECUTION_BINDING_STAGE or status != "done":
+                return
+            marker = "✓"
+            suffix = f" — {detail}" if detail else ""
+            self._stream.write(f"[{marker}] {stage}{suffix}\n")
+            self._stream.flush()
+
     if quiet:
-        return None
+        return _QuietReporter(sys.stderr)
     from .surface import make_terminal_reporter
 
     return make_terminal_reporter(sys.stderr)
+
+
+def _suggest_next_action(message: str) -> str | None:
+    lower = message.lower()
+    if "preparation config" in lower:
+        return "Check the preparation config path and JSON fields, then retry."
+    if "semantic config" in lower:
+        return "Check the semantic config path and JSON fields, then retry."
+    if "workflow config" in lower:
+        return "Check the workflow config path and driver binding, then retry."
+    if "planning foundation" in lower:
+        return "Fix the target/source references or brief, rerun preparation, then run again."
+    if "run_ready" in lower or "run-ready" in lower:
+        return "Inspect READINESS_NOTE and complete preparation before running."
+    if "not executable" in lower:
+        return "Make the referenced binding executable or point the config at a valid one."
+    if "not found" in lower or "missing file" in lower:
+        return "Check the referenced path from the current project directory."
+    if "no active workbook" in lower:
+        return "Run quickstart first, or pass --workbook / --workbook-id explicitly."
+    if "agent" in lower and "configured" in lower:
+        return "Run lightassay init, pass --agent, or provide both config paths."
+    return None
+
+
+def _print_error(exc: EvalError) -> None:
+    message = str(exc)
+    print(f"Error: {message}", file=sys.stderr)
+    next_action = _suggest_next_action(message)
+    if next_action:
+        print(f"Next: {next_action}", file=sys.stderr)
 
 
 def _stdin_is_tty() -> bool:
@@ -675,7 +724,7 @@ def _choose_agent_interactively(
         try:
             return _persist_agent(selected)
         except EvalError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            _print_error(exc)
 
 
 def _resolve_agent_arg(args: argparse.Namespace) -> str | None:
@@ -841,10 +890,15 @@ def _cmd_quickstart(args: argparse.Namespace) -> int:
     except SystemExit as exc:
         return int(exc.code)
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
 
-    print(f"Quickstart complete: {result.workbook_path}")
+    quickstart_label = (
+        "Quickstart complete"
+        if result.run_status == "completed"
+        else f"Quickstart finished with run status {result.run_status}"
+    )
+    print(f"{quickstart_label}: {result.workbook_path}")
     print(f"  Directions: {result.direction_count}")
     print(f"  Cases: {result.case_count}")
     print(
@@ -879,10 +933,15 @@ def _cmd_continue(args: argparse.Namespace) -> int:
     except SystemExit as exc:
         return int(exc.code)
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
 
-    print(f"Continue complete: {result.workbook_path}")
+    continue_label = (
+        "Continue complete"
+        if result.run_status == "completed"
+        else f"Continue finished with run status {result.run_status}"
+    )
+    print(f"{continue_label}: {result.workbook_path}")
     print(f"  Continuation version rotated: v{result.continuation_version}")
     print(f"  Directions: {result.direction_count}")
     print(f"  Cases: {result.case_count}")
@@ -904,7 +963,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     try:
         current = current_agent()
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
 
     if not _stdin_is_tty():
@@ -934,7 +993,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
             current=current,
         )
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
 
     print(f"Agent saved: {name} ({path})")
@@ -949,7 +1008,7 @@ def _cmd_agents(args: argparse.Namespace) -> int:
             raise EvalError("agents: positional agent cannot be combined with --list or --current.")
         current = current_agent()
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
 
     if args.list:
@@ -965,7 +1024,7 @@ def _cmd_agents(args: argparse.Namespace) -> int:
         try:
             name, path = _persist_agent(args.agent)
         except EvalError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            _print_error(exc)
             return 1
         print(f"Agent saved: {name} ({path})")
         return 0
@@ -986,7 +1045,7 @@ def _cmd_agents(args: argparse.Namespace) -> int:
             current=current,
         )
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
     print(f"Agent saved: {name} ({path})")
     return 0
@@ -997,7 +1056,7 @@ def _cmd_workbook(args: argparse.Namespace) -> int:
         name = _auto_workbook_name(args.output_dir)
         path = init_workbook(name, output_dir=args.output_dir)
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
     print(f"Created workbook: {path}")
     return 0
@@ -1007,7 +1066,7 @@ def _cmd_current_workbook(args: argparse.Namespace) -> int:
     try:
         path = current_workbook()
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
     if path is None:
         print("No active workbook. Run `lightassay quickstart` first.")
@@ -1020,7 +1079,7 @@ def _cmd_workbooks(args: argparse.Namespace) -> int:
     try:
         entries = known_workbooks()
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
     if not entries:
         print("No known workbooks under this state root.")
@@ -1091,7 +1150,7 @@ def _cmd_quick_try(args: argparse.Namespace) -> int:
                 output_dir=args.output_dir,
             )
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
 
     print(f"Quick try workbook created: {result.workbook_path}")
@@ -1110,7 +1169,7 @@ def _cmd_refine_suite(args: argparse.Namespace) -> int:
             output_dir=args.output_dir,
         )
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
 
     print(f"Refinement workbook created: {result.workbook_path}")
@@ -1133,7 +1192,7 @@ def _cmd_explore_workbook(args: argparse.Namespace) -> int:
             output_dir=args.output_dir,
         )
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
 
     print(f"Exploratory workbook created: {result.workbook_path}")
@@ -1157,7 +1216,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         result = session.run(output_dir=output_dir)
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
 
     print(f"Run {result.run_id} {result.status}.")
@@ -1203,7 +1262,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         )
         result = session.analyze(run_artifact_path, output_dir=output_dir)
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
 
     print(f"Analysis {result.analysis_id} complete.")
@@ -1219,6 +1278,16 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     goal: str | None = args.goal
     output_dir: str = args.output_dir
 
+    if len(run_artifact_paths) < 2:
+        parser = getattr(args, "_command_parser", None)
+        if parser is not None:
+            parser.print_usage(sys.stderr)
+        print(
+            "lightassay compare: error: at least 2 RUN_ARTIFACT paths are required.",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
         result = compare_runs(
             run_artifact_paths,
@@ -1227,7 +1296,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
             output_dir=output_dir,
         )
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
 
     print(f"Compare {result.compare_id} complete.")
@@ -1260,7 +1329,7 @@ def _cmd_prepare_directions(args: argparse.Namespace) -> int:
 
         result = session.prepare()
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
 
     print(f"Generated {result.state.direction_count} directions.")
@@ -1291,7 +1360,7 @@ def _cmd_prepare_cases(args: argparse.Namespace) -> int:
 
         result = session.prepare()
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
 
     print(f"Generated {result.state.case_count} cases.")
@@ -1322,7 +1391,7 @@ def _cmd_prepare_readiness(args: argparse.Namespace) -> int:
 
         result = session.prepare()
     except EvalError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        _print_error(exc)
         return 1
 
     status = "yes" if result.state.workbook_run_ready else "no"

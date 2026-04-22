@@ -327,7 +327,9 @@ and produces:
 - supports two execution modes:
   - legacy `adapter`
   - typed `driver`
-- injects `config_dir` into the command driver for config-origin semantics.
+- injects `config_dir` into the command driver and defaults `working_dir` to
+  config-origin semantics unless generated quickstart config sets an explicit
+  workspace root.
 
 `adapter_pack`
 

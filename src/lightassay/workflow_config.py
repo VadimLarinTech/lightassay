@@ -183,14 +183,24 @@ def load_workflow_config(path: str) -> WorkflowConfig:
     except ValueError as exc:
         raise WorkflowConfigError(f"Workflow config field 'driver' is invalid: {exc}") from None
 
-    # Inject config-origin for command drivers so that the subprocess
-    # runs with cwd=config_dir and relative paths in the command array
-    # resolve against the config file location, not the caller's cwd.
+    # Inject config-origin defaults for command drivers. Existing config
+    # files still run relative to config_dir unless an explicit working_dir
+    # is set in JSON (used by generated quickstart configs).
     if isinstance(driver_config, CommandDriverConfig):
         config_dir = os.path.dirname(os.path.abspath(path))
+        working_dir = driver_config.working_dir
+        if working_dir is not None:
+            working_dir = (
+                working_dir
+                if os.path.isabs(working_dir)
+                else os.path.normpath(os.path.join(config_dir, working_dir))
+            )
+        else:
+            working_dir = config_dir
         driver_config = CommandDriverConfig(
             command=driver_config.command,
             config_dir=config_dir,
+            working_dir=working_dir,
         )
 
     return WorkflowConfig(

@@ -8,11 +8,12 @@ directly in the workflow config.
 The subprocess receives the adapter request JSON on stdin and must
 write the adapter response JSON to stdout.
 
-**Config-origin semantics:** when ``CommandDriverConfig.config_dir`` is
-set (always the case when the config comes from ``load_workflow_config``),
-the subprocess runs with ``cwd=config_dir``.  This means relative paths
-in the command array (e.g. ``"adapters/my_adapter.py"``) resolve against
-the directory containing the workflow config file, not the caller's cwd.
+**Working-directory semantics:** when ``CommandDriverConfig.working_dir``
+is set, the subprocess runs with ``cwd=working_dir``. Otherwise, if only
+``config_dir`` is set, the subprocess runs with ``cwd=config_dir`` so
+existing config-origin semantics are preserved. Generated quickstart
+configs may set ``working_dir`` to the workspace root while still living
+under ``--output-dir``.
 
 **Non-zero exit diagnostics:** when the subprocess exits with a non-zero
 code, a bounded excerpt of its stdout is included in the ``DriverError``
@@ -35,8 +36,9 @@ _STDOUT_EXCERPT_LIMIT = 2000
 def execute(config: CommandDriverConfig, request_data: dict) -> dict:
     """Execute the command driver.
 
-    When ``config.config_dir`` is set, the subprocess runs with that
-    directory as its working directory (config-origin semantics).
+    When ``config.working_dir`` is set, the subprocess runs with that
+    directory as its working directory. Otherwise ``config.config_dir``
+    is used when present.
 
     Raises ``DriverError`` on subprocess failures (non-zero exit,
     invalid JSON output, non-dict response, not found, not executable).
@@ -45,7 +47,9 @@ def execute(config: CommandDriverConfig, request_data: dict) -> dict:
     request_json = json.dumps(request_data, ensure_ascii=False)
 
     run_kwargs: dict = {}
-    if config.config_dir is not None:
+    if config.working_dir is not None:
+        run_kwargs["cwd"] = config.working_dir
+    elif config.config_dir is not None:
         run_kwargs["cwd"] = config.config_dir
 
     try:

@@ -70,7 +70,11 @@ def build_workflow_config(
                 "Generated command workflow requires a non-empty 'command' list."
             )
         abs_root = os.path.abspath(workspace_root) if workspace_root else None
-        driver = CommandDriverConfig(command=list(shape.command), config_dir=abs_root)
+        driver = CommandDriverConfig(
+            command=list(shape.command),
+            config_dir=abs_root,
+            working_dir=abs_root,
+        )
     else:
         raise WorkflowConfigError(
             f"Cannot build workflow config for unknown execution shape type {shape.type!r}"
@@ -90,6 +94,7 @@ def write_workflow_config(
     workflow_id: str,
     llm_metadata: LLMMetadata | None = None,
     path: str,
+    workspace_root: str | None = None,
 ) -> WorkflowConfig:
     """Serialize a generated workflow config to *path* and return the loaded config.
 
@@ -99,7 +104,7 @@ def write_workflow_config(
     """
     data: dict = {
         "workflow_id": workflow_id,
-        "driver": _shape_to_driver_json(shape),
+        "driver": _shape_to_driver_json(shape, workspace_root=workspace_root),
     }
     if llm_metadata is not None and not llm_metadata.is_empty():
         md: dict = {}
@@ -114,7 +119,7 @@ def write_workflow_config(
     return load_workflow_config(path)
 
 
-def _shape_to_driver_json(shape: ExecutionShape) -> dict:
+def _shape_to_driver_json(shape: ExecutionShape, *, workspace_root: str | None = None) -> dict:
     if shape.type == EXEC_SHAPE_PYTHON:
         if not shape.module or not shape.function:
             raise WorkflowConfigError(
@@ -135,7 +140,10 @@ def _shape_to_driver_json(shape: ExecutionShape) -> dict:
             raise WorkflowConfigError(
                 "Generated command workflow requires a non-empty 'command' list."
             )
-        return {"type": shape.type, "command": list(shape.command)}
+        payload = {"type": shape.type, "command": list(shape.command)}
+        if workspace_root is not None:
+            payload["working_dir"] = os.path.abspath(workspace_root)
+        return payload
     raise WorkflowConfigError(
         f"Cannot serialize workflow config for unknown execution shape type {shape.type!r}"
     )

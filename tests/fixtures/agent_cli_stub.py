@@ -9,6 +9,7 @@ and returns deterministic JSON for every adapter operation.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 
@@ -16,6 +17,7 @@ _DOTTED_CALLABLE_RE = re.compile(
     r"^(?P<module>[A-Za-z_][A-Za-z0-9_\.]*)\.(?P<function>[A-Za-z_][A-Za-z0-9_]*)$"
 )
 _REQUEST_MARKER = "request:\n```json\n"
+_CALLABLE_SOURCE = os.path.abspath(os.path.join(os.path.dirname(__file__), "callable_echo.py"))
 
 
 def _fail(message: str) -> None:
@@ -42,6 +44,7 @@ def _extract_request(prompt: str) -> dict:
 
 def _bootstrap_response(request: dict) -> dict:
     target_hint = (request.get("target_hint") or "").strip()
+    workspace_root = os.path.abspath(request.get("workspace_root") or os.getcwd())
     match = _DOTTED_CALLABLE_RE.match(target_hint)
     if not match:
         return {
@@ -61,13 +64,19 @@ def _bootstrap_response(request: dict) -> dict:
 
     module = match.group("module")
     function = match.group("function")
+    relative_source = "relative_target.py"
+    callable_sources = (
+        [relative_source]
+        if os.path.isfile(os.path.join(workspace_root, relative_source))
+        else [_CALLABLE_SOURCE]
+    )
     return {
         "target": {
             "kind": "python-callable",
             "name": function,
             "locator": target_hint,
             "boundary": f"python callable {target_hint}",
-            "sources": [],
+            "sources": callable_sources,
             "notes": "Agent fixture resolved the dotted callable target hint.",
             "assumptions": [],
         },

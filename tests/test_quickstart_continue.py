@@ -11,12 +11,15 @@ Run with:
 from __future__ import annotations
 
 import json
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from types import SimpleNamespace
+from unittest import mock
 
 _SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 if _SRC not in sys.path:
@@ -27,6 +30,7 @@ from lightassay import (
     continue_workbook,
     quickstart,
 )
+import lightassay.cli as cli_mod
 from lightassay.runtime_state import (
     execution_log_path,
     get_active_workbook,
@@ -49,6 +53,9 @@ from lightassay.workbook_renderer import render
 
 _FIXTURE = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "fixtures", "preparation_adapter_bootstrap.py")
+)
+_SEMANTIC_FAIL = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "fixtures", "semantic_adapter_fail.py")
 )
 _CALLABLE_MODULE = "tests.fixtures.callable_echo"
 _CALLABLE_FUNCTION = "handle_request"
@@ -248,6 +255,36 @@ class TestQuickstartEndToEnd(unittest.TestCase):
         self.assertIn("Next-step recommendations", analysis_text)
         self.assertIn("To ensure:", analysis_text)
 
+    def test_output_dir_does_not_become_workspace_root(self):
+        with tempfile.TemporaryDirectory() as root:
+            workspace = os.path.join(root, "workspace")
+            output = os.path.join(root, "artifacts")
+            os.makedirs(workspace)
+            os.makedirs(output)
+            _write(
+                os.path.join(workspace, "relative_target.py"),
+                "def target():\n    return 'workspace source'\n",
+            )
+            prep_cfg = os.path.join(root, "prep.json")
+            sem_cfg = os.path.join(root, "sem.json")
+            _write_config(prep_cfg, _FIXTURE, "fixture", "bootstrap-v1")
+            _write_config(sem_cfg, _FIXTURE, "fixture", "bootstrap-v1")
+
+            with _pushd(workspace):
+                result = quickstart(
+                    "separate-output",
+                    message="Check callable with separate artifact directory.",
+                    target_hint=f"{_CALLABLE_MODULE}.{_CALLABLE_FUNCTION}",
+                    preparation_config=prep_cfg,
+                    semantic_config=sem_cfg,
+                    output_dir=output,
+                )
+
+            self.assertEqual(get_active_workbook(workspace), os.path.abspath(result.workbook_path))
+            with open(result.workbook_path, encoding="utf-8") as fh:
+                workbook = parse(fh.read())
+            self.assertEqual(workbook.target.sources, ["relative_target.py"])
+
     def test_quickstart_requires_non_empty_message(self):
         with self.assertRaises(EvalError):
             quickstart(
@@ -257,6 +294,27 @@ class TestQuickstartEndToEnd(unittest.TestCase):
                 semantic_config=self.sem_cfg,
                 output_dir=self.tmp,
             )
+
+    def test_quickstart_stops_when_preparation_breaks_planning_foundation(self):
+        def _broken_readiness(workbook, *_args, **_kwargs):
+            workbook.target.sources = []
+            workbook.run_readiness = RunReadiness(run_ready=True, readiness_note="")
+            return workbook
+
+        with mock.patch(
+            "lightassay.orchestrator.execute_reconcile_readiness",
+            side_effect=_broken_readiness,
+        ):
+            with self.assertRaises(EvalError) as ctx:
+                quickstart(
+                    "e2e-broken-planning",
+                    message="Check callable.",
+                    target_hint=f"{_CALLABLE_MODULE}.{_CALLABLE_FUNCTION}",
+                    preparation_config=self.prep_cfg,
+                    semantic_config=self.sem_cfg,
+                    output_dir=self.tmp,
+                )
+        self.assertIn("planning foundation", str(ctx.exception).lower())
 
 
 # ── Continue end-to-end ──────────────────────────────────────────────────────
@@ -336,6 +394,111 @@ class TestContinueEndToEnd(unittest.TestCase):
         self.assertEqual(result.continuation_version, 1)
         self.assertIsNotNone(result.compare_artifact_path)
         self.assertTrue(os.path.isfile(result.compare_artifact_path))
+
+    def test_continue_uses_workspace_root_when_workbook_lives_under_output_dir(self):
+        with tempfile.TemporaryDirectory() as root:
+            workspace = os.path.join(root, "workspace")
+            output = os.path.join(root, "artifacts")
+            os.makedirs(workspace)
+            os.makedirs(output)
+            _write(
+                os.path.join(workspace, "relative_target.py"),
+                "def target():\n    return 'workspace source'\n",
+            )
+            prep_cfg = os.path.join(root, "prep.json")
+            sem_cfg = os.path.join(root, "sem.json")
+            _write_config(prep_cfg, _FIXTURE, "fixture", "bootstrap-v1")
+            _write_config(sem_cfg, _FIXTURE, "fixture", "bootstrap-v1")
+
+            with _pushd(workspace):
+                quickstart_result = quickstart(
+                    "continue-separate-output",
+                    message="Check callable with separate artifact directory.",
+                    target_hint=f"{_CALLABLE_MODULE}.{_CALLABLE_FUNCTION}",
+                    preparation_config=prep_cfg,
+                    semantic_config=sem_cfg,
+                    output_dir=output,
+                )
+                result = continue_workbook(
+                    preparation_config=prep_cfg,
+                    semantic_config=sem_cfg,
+                    message="Second pass from workspace root.",
+                    output_dir=output,
+                )
+
+            self.assertEqual(get_active_workbook(workspace), os.path.abspath(result.workbook_path))
+            self.assertEqual(result.workbook_path, quickstart_result.workbook_path)
+            self.assertTrue(os.path.isfile(result.run_artifact_path))
+            with open(result.workbook_path, encoding="utf-8") as fh:
+                workbook = parse(fh.read())
+            self.assertEqual(workbook.target.sources, ["relative_target.py"])
+
+    def test_continue_stops_when_preparation_breaks_planning_foundation(self):
+        with open(self.quickstart_result.workbook_path, encoding="utf-8") as fh:
+            original_text = fh.read()
+
+        def _broken_readiness(workbook, *_args, **_kwargs):
+            workbook.brief = ""
+            workbook.run_readiness = RunReadiness(run_ready=True, readiness_note="")
+            return workbook
+
+        with mock.patch(
+            "lightassay.orchestrator.execute_reconcile_readiness",
+            side_effect=_broken_readiness,
+        ):
+            with self.assertRaises(EvalError) as ctx:
+                continue_workbook(
+                    preparation_config=self.prep_cfg,
+                    semantic_config=self.sem_cfg,
+                    message="Try another pass.",
+                    output_dir=self.tmp,
+                )
+        self.assertIn("planning foundation", str(ctx.exception).lower())
+        with open(self.quickstart_result.workbook_path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), original_text)
+
+    def test_continue_deletes_artifacts_created_before_rollback(self):
+        sem_fail_cfg = os.path.join(self.tmp, "sem-fail.json")
+        _write_config(sem_fail_cfg, _SEMANTIC_FAIL, "fixture", "fail-v1")
+
+        before_runs = {
+            name
+            for name in os.listdir(self.tmp)
+            if name.startswith("run_") and name.endswith(".json")
+        }
+        before_analyses = {
+            name
+            for name in os.listdir(self.tmp)
+            if name.startswith("analysis_") and name.endswith(".md")
+        }
+
+        with self.assertRaises(EvalError) as ctx:
+            continue_workbook(
+                preparation_config=self.prep_cfg,
+                semantic_config=sem_fail_cfg,
+                message="Trigger analysis failure after run.",
+                output_dir=self.tmp,
+            )
+        self.assertIn("Analysis failed", str(ctx.exception))
+
+        after_runs = {
+            name
+            for name in os.listdir(self.tmp)
+            if name.startswith("run_") and name.endswith(".json")
+        }
+        after_analyses = {
+            name
+            for name in os.listdir(self.tmp)
+            if name.startswith("analysis_") and name.endswith(".md")
+        }
+        self.assertEqual(after_runs, before_runs)
+        self.assertEqual(after_analyses, before_analyses)
+
+        with open(self.quickstart_result.workbook_path, encoding="utf-8") as fh:
+            workbook = parse(fh.read())
+        self.assertEqual(
+            workbook.artifact_references.run, self.quickstart_result.run_artifact_path
+        )
 
     def test_continue_uses_explicit_workbook_path_when_provided(self):
         # Remove the active workbook pointer to force the explicit path
@@ -472,6 +635,10 @@ class TestCLISmoke(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("Quickstart complete", proc.stdout)
+        self.assertIn("[✓] Execution binding", proc.stderr)
+        self.assertIn("target:", proc.stderr)
+        self.assertIn("execution_shape:", proc.stderr)
+        self.assertIn("workflow_config_path:", proc.stderr)
 
         # Follow-up continue also works via CLI.
         proc = self._run(
@@ -488,6 +655,67 @@ class TestCLISmoke(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("Continue complete", proc.stdout)
+        self.assertNotIn("Execution binding", proc.stderr)
+
+    def test_cmd_quickstart_failed_run_uses_honest_label(self):
+        args = SimpleNamespace(
+            quiet=False,
+            preparation_config=self.prep_cfg,
+            semantic_config=self.sem_cfg,
+            message="Check failing target.",
+            target_hint=f"{_CALLABLE_MODULE}.{_CALLABLE_FUNCTION}",
+            output_dir=self.tmp,
+            agent=None,
+            full_intent=False,
+            _command_parser=None,
+        )
+        fake_result = SimpleNamespace(
+            workbook_path="/tmp/workbook1.workbook.md",
+            direction_count=1,
+            case_count=1,
+            run_artifact_path="/tmp/run_123.json",
+            run_status="failed",
+            completed_cases=0,
+            total_cases=1,
+            failed_cases=1,
+            analysis_artifact_path="/tmp/analysis_123.md",
+            workflow_config_path="/tmp/generated.workflow.json",
+            active_workbook_pointer_path="/tmp/.lightassay/active_workbook.json",
+            execution_log_path="/tmp/.lightassay/execution_log.jsonl",
+            conclusion="Run recorded execution failures.",
+        )
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(cli_mod, "quickstart", return_value=fake_result),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            rc = cli_mod._cmd_quickstart(args)
+
+        self.assertEqual(rc, 1)
+        self.assertIn(
+            "Quickstart finished with run status failed: /tmp/workbook1.workbook.md",
+            stdout.getvalue(),
+        )
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_continue_cli_error_prints_next_step(self):
+        proc = self._run(
+            "continue",
+            "--preparation-config",
+            self.prep_cfg,
+            "--semantic-config",
+            self.sem_cfg,
+            "--message",
+            "Follow-up pass via CLI.",
+            "--output-dir",
+            self.tmp,
+        )
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn("Error: No active workbook pointer", proc.stderr)
+        self.assertIn("Next: Run quickstart first", proc.stderr)
 
 
 class TestBackendAutoSelection(unittest.TestCase):
@@ -907,6 +1135,9 @@ class TestWorkbookRegistryAndAgentState(unittest.TestCase):
         self.assertIn("[…] Resolving intent", proc.stderr)
         self.assertIn("Processing bootstrap for the current workspace.", proc.stderr)
         self.assertIn("Processing generate_cases for the current workspace.", proc.stderr)
+        self.assertIn("[✓] Execution binding", proc.stderr)
+        self.assertIn("target:", proc.stderr)
+        self.assertIn("workflow_config_path:", proc.stderr)
 
 
 class TestCanonicalBriefOwnership(unittest.TestCase):

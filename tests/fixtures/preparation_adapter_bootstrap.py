@@ -9,6 +9,7 @@ smoke tests.
 """
 
 import json
+import os
 import re
 import sys
 
@@ -42,11 +43,19 @@ _METHOD_URL_RE = re.compile(
     r"^(?P<method>GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(?P<url>https?://\S+)$",
     re.IGNORECASE,
 )
+_CALLABLE_SOURCE = os.path.abspath(os.path.join(os.path.dirname(__file__), "callable_echo.py"))
 
 
 if operation == "bootstrap":
     user_message = (request.get("user_message") or "").strip() or "test"
     target_hint = (request.get("target_hint") or "").strip()
+    workspace_root = os.path.abspath(request.get("workspace_root") or os.getcwd())
+    relative_source = "relative_target.py"
+    callable_sources = (
+        [relative_source]
+        if os.path.isfile(os.path.join(workspace_root, relative_source))
+        else [_CALLABLE_SOURCE]
+    )
     constraints = {
         "max_directions": 2,
         "max_cases": 4,
@@ -63,7 +72,7 @@ if operation == "bootstrap":
                 "name": function,
                 "locator": target_hint,
                 "boundary": f"python callable {target_hint}",
-                "sources": [],
+                "sources": callable_sources,
                 "notes": "Bootstrap fixture resolved the dotted callable hint.",
                 "assumptions": [],
             },
@@ -87,7 +96,7 @@ if operation == "bootstrap":
                 "name": f"{method} {url}",
                 "locator": url,
                 "boundary": f"{method} {url}",
-                "sources": [],
+                "sources": [url],
                 "notes": "Bootstrap fixture resolved the explicit METHOD URL hint.",
                 "assumptions": [],
             },

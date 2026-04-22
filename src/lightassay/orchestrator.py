@@ -17,6 +17,7 @@ while full traceability remains available on disk.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -25,7 +26,11 @@ from typing import Callable
 
 from .backends import list_backends, resolve_backend
 from .bootstrap import (
+    EXEC_SHAPE_COMMAND,
+    EXEC_SHAPE_HTTP,
+    EXEC_SHAPE_PYTHON,
     BootstrapResult,
+    ExecutionShape,
     TargetResolution,
     bootstrap_quickstart,
 )
@@ -61,7 +66,6 @@ from .workbook_models import (
     RunReadiness,
     Target,
 )
-from .workflow_config import LLMMetadata
 from .workflow_config_builder import write_workflow_config
 
 QUICKSTART_PLANNING_MODE = "quickstart_minimal_high_signal"
@@ -72,6 +76,7 @@ _STAGE_TARGET = "Building target"
 _STAGE_PREP_DIRECTIONS = "Preparing directions"
 _STAGE_PREP_CASES = "Preparing cases"
 _STAGE_PREP_READINESS = "Reconciling readiness"
+_STAGE_EXECUTION_BINDING = "Execution binding"
 _STAGE_RUN = "Running workflow"
 _STAGE_ANALYZE = "Writing analysis"
 _STAGE_COMPARE = "Comparing with previous run"
@@ -86,22 +91,6 @@ _NAME_SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
 def _noop_reporter(stage: str, status: str, detail: str) -> None:  # pragma: no cover
     return
-
-
-def _workflow_llm_metadata(
-    workflow_provider: str | None,
-    workflow_model: str | None,
-) -> LLMMetadata | None:
-    """Turn caller-supplied provider/model strings into LLMMetadata.
-
-    Returns ``None`` when both are unset so the generated config does
-    not ship placeholder LLM metadata for a non-LLM target.
-    """
-    provider = workflow_provider.strip() if workflow_provider else None
-    model = workflow_model.strip() if workflow_model else None
-    if not provider and not model:
-        return None
-    return LLMMetadata(provider=provider or None, model=model or None)
 
 
 def _normalize_name(name: str) -> str:
@@ -175,6 +164,179 @@ def _wrap_stage(
         duration_ms=duration_ms,
     )
     return value
+
+
+_SENSITIVE_KEY_PARTS = (
+    "authorization",
+    "api-key",
+    "api_key",
+    "apikey",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "cookie",
+    "set-cookie",
+)
+
+
+def _is_sensitive_key(key: object) -> bool:
+    text = str(key).lower().replace("_", "-")
+    return any(part in text for part in _SENSITIVE_KEY_PARTS)
+
+
+def _redact_url_for_log(url: str | None) -> str:
+    if not url:
+        return "<missing-url>"
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    scheme = parsed.scheme or "<missing-scheme>"
+    host = parsed.hostname or "<missing-host>"
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        parsed_port = None
+    port = f":{parsed_port}" if parsed_port is not None else ""
+    suffix = "/..." if (parsed.path or parsed.params or parsed.query or parsed.fragment) else ""
+    return f"{scheme}://{host}{port}{suffix}"
+
+
+def _redact_mapping(mapping: dict | None) -> dict | None:
+    if mapping is None:
+        return None
+    result = {}
+    for key, value in mapping.items():
+        if _is_sensitive_key(key):
+            result[key] = "<redacted>"
+        else:
+            result[key] = value
+    return result
+
+
+def _redact_command_tokens(command: list[str]) -> list[str]:
+    redacted: list[str] = []
+    redact_next = False
+    for token in command:
+        lower = token.lower()
+        flag_name = lower.split("=", 1)[0]
+        if redact_next:
+            redacted.append("<redacted>")
+            redact_next = False
+            continue
+        looks_like_key = token.startswith("-") or "=" in token
+        if looks_like_key and _is_sensitive_key(flag_name):
+            if "=" in token:
+                redacted.append(token.split("=", 1)[0] + "=<redacted>")
+            else:
+                redacted.append(token)
+                redact_next = True
+            continue
+        redacted.append(token)
+    return redacted
+
+
+def _redact_config_for_log(value):
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            if key == "url" and isinstance(item, str):
+                result[key] = _redact_url_for_log(item)
+            elif key == "headers" and isinstance(item, dict):
+                result[key] = _redact_mapping(item)
+            elif key == "command" and isinstance(item, list):
+                result[key] = [
+                    str(part)
+                    for part in _redact_command_tokens([str(part) for part in item])
+                ]
+            elif _is_sensitive_key(key):
+                result[key] = "<redacted>"
+            else:
+                result[key] = _redact_config_for_log(item)
+        return result
+    if isinstance(value, list):
+        return [_redact_config_for_log(item) for item in value]
+    return value
+
+
+def _target_summary(target: TargetResolution) -> str:
+    sources = ", ".join(target.sources) if target.sources else "<none>"
+    return (
+        f"kind={target.kind!r}, name={target.name!r}, locator={target.locator!r}, "
+        f"boundary={target.boundary!r}, sources=[{sources}]"
+    )
+
+
+def _execution_shape_summary(shape: ExecutionShape) -> str:
+    if shape.type == EXEC_SHAPE_PYTHON:
+        return f"python-callable {shape.module}.{shape.function}"
+    if shape.type == EXEC_SHAPE_HTTP:
+        header_keys = sorted((shape.headers or {}).keys())
+        timeout = shape.timeout_seconds if shape.timeout_seconds is not None else "none"
+        return (
+            f"http method={shape.method!r}, url={_redact_url_for_log(shape.url)!r}, "
+            f"headers={header_keys}, timeout_seconds={timeout!r}"
+        )
+    if shape.type == EXEC_SHAPE_COMMAND:
+        return "command " + json.dumps(
+            _redact_command_tokens(list(shape.command)),
+            ensure_ascii=False,
+        )
+    return f"unknown execution shape {shape.type!r}"
+
+
+def _workflow_config_preview(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as exc:
+        return f"<could not read config preview: {type(exc).__name__}: {exc}>"
+    redacted = _redact_config_for_log(data)
+    return json.dumps(redacted, ensure_ascii=False, sort_keys=True)
+
+
+def _emit_quickstart_execution_binding(
+    reporter: StageReporter,
+    log_root: str,
+    workbook_path: str,
+    backend: str,
+    target: TargetResolution,
+    shape: ExecutionShape,
+    workflow_config_path: str,
+) -> None:
+    detail = (
+        f"target: {_target_summary(target)}; "
+        f"execution_shape: {_execution_shape_summary(shape)}; "
+        f"workflow_config_path: {workflow_config_path}; "
+        f"workflow_config: {_workflow_config_preview(workflow_config_path)}"
+    )
+    _stage(
+        reporter,
+        log_root,
+        "quickstart",
+        workbook_path,
+        backend,
+        _STAGE_EXECUTION_BINDING,
+        "done",
+        detail,
+    )
+
+
+def _delete_created_artifacts(paths: list[str]) -> list[str]:
+    deleted: list[str] = []
+    for path in dict.fromkeys(paths):
+        if not path:
+            continue
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+                deleted.append(path)
+        except OSError:
+            # Rollback cleanup must not hide the original failure. Any file
+            # that could not be removed remains visible on disk for manual
+            # cleanup and investigation.
+            continue
+    return deleted
 
 
 def _apply_target_to_workbook(workbook, target: TargetResolution) -> None:
@@ -389,8 +551,6 @@ def run_quickstart(
     output_dir: str = ".",
     backend: str | None = None,
     reporter: StageReporter | None = None,
-    workflow_provider: str | None = None,
-    workflow_model: str | None = None,
     full_intent: bool = False,
 ) -> QuickstartResult:
     """Run the full quickstart orchestration end-to-end.
@@ -410,6 +570,7 @@ def run_quickstart(
     # Lazy import to avoid surface import cycles.
     from .surface import (
         _build_eval_state,
+        _planning_readiness_issues,
         _read_workbook,
         _save_workbook,
         init_workbook,
@@ -423,7 +584,8 @@ def run_quickstart(
         raise EvalError(f"Output directory does not exist: {output_dir!r}")
 
     reporter = reporter or _noop_reporter
-    state_root = os.getcwd()
+    workspace_root = os.path.abspath(os.getcwd())
+    state_root = workspace_root
     log_root = state_root
 
     # Bootstrap is the authoritative target resolution path. It needs
@@ -448,7 +610,7 @@ def run_quickstart(
                 message,
                 target_hint=target_hint,
                 preparation_config=prep_config_obj,
-                workspace_root=os.getcwd(),
+                workspace_root=workspace_root,
                 full_intent=full_intent,
             ),
         )
@@ -493,8 +655,8 @@ def run_quickstart(
     write_workflow_config(
         bootstrap_result.execution_shape,
         workflow_id=f"quickstart-{safe_name}",
-        llm_metadata=_workflow_llm_metadata(workflow_provider, workflow_model),
         path=workflow_config_path,
+        workspace_root=workspace_root,
     )
 
     planning_context = _quickstart_planning_context(bootstrap_result, message)
@@ -505,7 +667,7 @@ def run_quickstart(
         wb = execute_generate_directions(
             wb,
             prep_config_obj,
-            source_root=os.path.dirname(workbook_path),
+            source_root=workspace_root,
             planning_mode=QUICKSTART_PLANNING_MODE,
             planning_context=planning_context,
         )
@@ -517,7 +679,7 @@ def run_quickstart(
         wb = execute_generate_cases(
             wb,
             prep_config_obj,
-            source_root=os.path.dirname(workbook_path),
+            source_root=workspace_root,
             planning_mode=QUICKSTART_PLANNING_MODE,
             planning_context=planning_context,
         )
@@ -529,7 +691,7 @@ def run_quickstart(
         wb = execute_reconcile_readiness(
             wb,
             prep_config_obj,
-            source_root=os.path.dirname(workbook_path),
+            source_root=workspace_root,
             planning_mode=QUICKSTART_PLANNING_MODE,
             planning_context=planning_context,
         )
@@ -567,11 +729,27 @@ def run_quickstart(
     except PreparationError as exc:
         raise EvalError(f"Quickstart preparation failed: {exc}") from exc
 
+    planning_issues = _planning_readiness_issues(workbook)
+    if planning_issues:
+        raise EvalError(
+            "Quickstart preparation produced a workbook with an incomplete planning "
+            "foundation: " + "; ".join(planning_issues)
+        )
     if not workbook.run_readiness.run_ready:
         raise EvalError(
             "Quickstart preparation finished but RUN_READY is 'no': "
             f"{workbook.run_readiness.readiness_note!r}"
         )
+
+    _emit_quickstart_execution_binding(
+        reporter,
+        log_root,
+        workbook_path,
+        backend_label,
+        bootstrap_result.target,
+        bootstrap_result.execution_shape,
+        workflow_config_path,
+    )
 
     # Stage 4 — run.
     run_result = _wrap_stage(
@@ -901,6 +1079,7 @@ def run_continue(
     """
     from .surface import (
         _build_eval_state,
+        _planning_readiness_issues,
         _read_workbook,
         _save_workbook,
     )
@@ -909,7 +1088,8 @@ def run_continue(
         raise EvalError(f"Output directory does not exist: {output_dir!r}")
 
     reporter = reporter or _noop_reporter
-    state_root = os.getcwd()
+    workspace_root = os.path.abspath(os.getcwd())
+    state_root = workspace_root
     log_root = state_root
 
     prep_config_obj, sem_config_obj, active_backend = _resolve_adapter_configs(
@@ -939,6 +1119,7 @@ def run_continue(
     # them rather than regenerate from scratch.
     previous_directions_full = _snapshot_previous_directions(workbook)
     previous_cases_full = _snapshot_previous_cases(workbook)
+    created_artifact_paths: list[str] = []
 
     # Persist the snapshot in the execution log before the destructive
     # save so the previous iteration is always recoverable from on-disk
@@ -993,7 +1174,7 @@ def run_continue(
                 reporter, log_root, "continue", resolved_path, backend_label, stage_name, fn
             )
 
-        source_root = os.path.dirname(resolved_path)
+        source_root = workspace_root
 
         def _prep_directions():
             wb = _read_workbook(resolved_path)
@@ -1038,6 +1219,12 @@ def run_continue(
         except PreparationError as exc:
             raise EvalError(f"Continue preparation failed: {exc}") from exc
 
+        planning_issues = _planning_readiness_issues(workbook)
+        if planning_issues:
+            raise EvalError(
+                "Continue preparation produced a workbook with an incomplete planning "
+                "foundation: " + "; ".join(planning_issues)
+            )
         if not workbook.run_readiness.run_ready:
             raise EvalError(
                 "Continue preparation finished but RUN_READY is 'no': "
@@ -1050,6 +1237,7 @@ def run_continue(
                 workbook, resolved_path, resolved_workflow_config_path, output_dir
             ),
         )
+        created_artifact_paths.append(run_artifact_path)
         workbook = _read_workbook(resolved_path)
         workbook.artifact_references.run = run_artifact_path
         _save_workbook(workbook, resolved_path)
@@ -1069,6 +1257,7 @@ def run_continue(
                 },
             ),
         )
+        created_artifact_paths.append(analysis_artifact_path)
         workbook = _read_workbook(resolved_path)
         workbook.artifact_references.analysis = analysis_artifact_path
         _save_workbook(workbook, resolved_path)
@@ -1085,6 +1274,7 @@ def run_continue(
                 ),
             )
             compare_artifact_path = compare_result.artifact_path
+            created_artifact_paths.append(compare_artifact_path)
             workbook = _read_workbook(resolved_path)
             workbook.artifact_references.compare = compare_artifact_path
             _save_workbook(workbook, resolved_path)
@@ -1095,8 +1285,20 @@ def run_continue(
         consumed_version = _rotate_continuation(workbook, message)
         _save_workbook(workbook, resolved_path)
     except Exception:
+        deleted_artifacts = _delete_created_artifacts(created_artifact_paths)
         with open(resolved_path, "w", encoding="utf-8") as fh:
             fh.write(original_workbook_text)
+        if deleted_artifacts:
+            append_execution_log(
+                {
+                    "command": "continue",
+                    "event": "rollback_cleanup",
+                    "workbook_path": resolved_path,
+                    "deleted_artifacts": deleted_artifacts,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+                state_root=log_root,
+            )
         raise
 
     pointer_path = set_active_workbook(resolved_path, state_root=state_root)

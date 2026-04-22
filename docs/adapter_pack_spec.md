@@ -155,8 +155,8 @@ If `timeout_seconds` is absent, no timeout is enforced (consistent with the v1 s
 
 | Condition | Error |
 |-----------|-------|
-| Non-2xx HTTP response | `"HTTP <code> from <url>"` |
-| Connection failure | `"connection failed to <url>"` |
+| Non-2xx HTTP response | `"HTTP <code> from <redacted-url>"` |
+| Connection failure | `"connection failed to <redacted-url>"` |
 | Response body not valid JSON | `"response body is not valid JSON"` |
 | Response not a JSON object | `"response must be a JSON object"` |
 
@@ -177,12 +177,14 @@ Runs an explicit command list as a subprocess. Similar to the legacy `adapter` p
 |-------|------|----------|-------------|
 | `type` | `"command"` | yes | Driver selector |
 | `command` | array of non-empty strings | yes | Command to execute |
-
-No optional fields.
+| `working_dir` | non-empty string | no | Explicit subprocess working directory. Relative values resolve against the workflow config directory. |
 
 ### Config-origin semantics (working directory)
 
-When the workflow config is loaded via `load_workflow_config`, the directory containing the config file is recorded as the **config-origin directory**. The command driver subprocess runs with `cwd` set to this directory.
+When the workflow config is loaded via `load_workflow_config`, the directory containing the config file is recorded as the **config-origin directory**.
+
+- If `working_dir` is absent, the command driver subprocess runs with `cwd` set to the config-origin directory.
+- If `working_dir` is present, the subprocess runs with `cwd` set to that directory instead. Relative `working_dir` values resolve against the config-origin directory at load time.
 
 This means relative paths in the command array resolve against the config file location, not the caller's current working directory. For example, given a config file at `/project/configs/workflow.json`:
 
@@ -197,7 +199,9 @@ The subprocess runs with `cwd=/project/configs/`, so `adapters/my_adapter.py` re
 
 This matches the legacy `adapter` path, which resolves relative adapter paths against the config file directory at load time.
 
-The structural viability check (`can_run`/`why_not`) uses the same config-origin resolution, so viability results stay aligned with runtime behavior.
+Generated quickstart configs may set `working_dir` explicitly to the original workspace root while still writing the generated workflow config file under a separate `--output-dir`.
+
+The structural viability check (`can_run`/`why_not`) uses the same resolution rules, so viability results stay aligned with runtime behavior.
 
 ### Subprocess contract
 
