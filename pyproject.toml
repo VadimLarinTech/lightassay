@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lightassay"
-version = "0.3.1"
+version = "0.3.2"
 description = "File-based orchestrator for structured evaluation of applied LLM workflows: humans declare intent, LLMs reason about quality, code runs and records raw facts"
 readme = "README.md"
 requires-python = ">=3.9"

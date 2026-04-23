@@ -105,7 +105,7 @@ class TestCLIBehavior(unittest.TestCase):
         result = self._run_cli(["--version"])
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         combined = result.stdout + result.stderr
-        self.assertIn("0.3.1", combined)
+        self.assertIn("0.3.2", combined)
 
     def test_unknown_command_exits_nonzero(self):
         result = self._run_cli(["nonexistent-command"])
@@ -621,7 +621,7 @@ class TestInstalledPackage(unittest.TestCase):
                 ]
             )
             self.assertEqual(import_result.returncode, 0, msg=import_result.stderr)
-            self.assertIn("0.3.1", import_result.stdout)
+            self.assertIn("0.3.2", import_result.stdout)
 
             venv_bin_dir = os.path.dirname(venv_bin_cli)
             self.assertTrue(
@@ -637,7 +637,7 @@ class TestInstalledPackage(unittest.TestCase):
 
             version_result = self._run([venv_bin_cli, "--version"])
             self.assertEqual(version_result.returncode, 0, msg=version_result.stderr)
-            self.assertIn("0.3.1", version_result.stdout + version_result.stderr)
+            self.assertIn("0.3.2", version_result.stdout + version_result.stderr)
 
 
 if __name__ == "__main__":

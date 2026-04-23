@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] — 2026-04-23
+
+### Fixed
+- Fixed quickstart and continue orchestration so planning failures stop
+  cleanly, resolved execution binding is shown before the first run, and
+  `--output-dir` no longer changes source/workspace resolution semantics.
+- Fixed execution binding handling so broken bindings fail early instead of
+  producing fake runs or misleading partial workflow progress.
+- Fixed dry readiness checks so `state()`, `can_run()`, and related paths do
+  not import target workflow modules or trigger import-time side effects.
+- Fixed rollback cleanup so failed continue attempts do not leave orphan
+  run, analysis, or compare artifacts behind.
+- Fixed CLI/runtime/docs alignment around quickstart, continue, agent setup,
+  and workbook flow.
+- Fixed validation and packaging polish so the lint, format, test, and build
+  pipeline passes cleanly again.
+
 ## [0.3.1] — Initial public release
 
 ### Added
